@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Asteroids Clone</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1a1a1a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+            touch-action: none; /* Prevents default touch behaviors like scrolling */
+        }
+        canvas {
+            border: 1px solid #fff;
+            max-width: 100%;
+            max-height: 100%;
+            width: auto;
+            height: auto;
+        }
+        audio { display: none; }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <audio id="shootSound" src="shoot.mp3" preload="auto"></audio>
+    <audio id="explodeSound" src="explode.wav" preload="auto"></audio>
+    <audio id="crashSound" src="crash.wav" preload="auto"></audio>
+    <audio id="supermanShootSound" src="superman_shoot.wav" preload="auto"></audio>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Audio elements
+        const shootSound = document.getElementById('shootSound');
+        const explodeSound = document.getElementById('explodeSound');
+        const crashSound = document.getElementById('crashSound');
+        const supermanShootSound = document.getElementById('supermanShootSound');
+
+        // Game constants
+        const SHIP_SIZE = 40;
+        const ASTEROID_MAX_SIZE = 40;
+        const BADGUY_SIZE = 80;
+        const SUPERMAN_SIZE = 100;
+        const POWERUP_BASE_SIZE = 20;
+        const BULLET_SPEED = 5;
+        const BADGUY_BULLET_SPEED = 3;
+        const SUPERMAN_BULLET_SPEED = 4;
+        const TURBO_BULLET_SPEED = BULLET_SPEED * 2;
+        const FRICTION = 0.98;
+        const BASE_ASTEROIDS = 5;
+        const SHIP_THRUST = 0.1;
+        const BULLET_COOLDOWN = 200;
+        const TURBO_BULLET_COOLDOWN = BULLET_COOLDOWN / 2;
+        const BADGUY_SHOOT_INTERVAL = 1000;
+        const SUPERMAN_SHOOT_INTERVAL = 2000;
+        const BADGUY_RESPAWN_DELAY = 10000;
+        const SUPERMAN_BULLET_COUNT = 12;
+        const MAX_LIVES = 3;
+        const INVINCIBILITY_DURATION = 2000;
+        const PARTICLE_COUNT = 10;
+        const PARTICLE_LIFETIME = 500;
+        const LEVEL_PAUSE_DURATION = 3000;
+        const EXPLOSION_DELAY = 2000;
+        const TURBO_DURATION = 15000;
+
+        // Set canvas size dynamically
+        function resizeCanvas() {
+            const maxWidth = window.innerWidth;
+            const maxHeight = window.innerHeight;
+            const aspectRatio = 800 / 600; // Original aspect ratio
+
+            let width = maxWidth;
+            let height = width / aspectRatio;
+
+            if (height > maxHeight) {
+                height = maxHeight;
+                width = height * aspectRatio;
+            }
+
+            canvas.width = width;
+            canvas.height = height;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        // Load images
+        const shipImage = new Image();
+        shipImage.src = 'spaceship.png';
+        let isShipImageLoaded = false;
+        shipImage.onload = () => isShipImageLoaded = true;
+        shipImage.onerror = () => console.error('Failed to load spaceship.png');
+
+        const badGuyImage = new Image();
+        badGuyImage.src = 'bost.webp';
+        let isBadGuyImageLoaded = false;
+        badGuyImage.onload = () => isBadGuyImageLoaded = true;
+        badGuyImage.onerror = () => console.error('Failed to load bost.webp');
+
+        const supermanImage = new Image();
+        supermanImage.src = 'superman.webp';
+        let isSupermanImageLoaded = false;
+        supermanImage.onload = () => isSupermanImageLoaded = true;
+        supermanImage.onerror = () => console.error('Failed to load superman.webp');
+
+        // Game state
+        const game = {
+            state: 'start',
+            ship: null,
+            asteroids: [],
+            bullets: [],
+            enemyBullets: [],
+            particles: [],
+            badGuy: null,
+            superman: null,
+            powerUp: null,
+            asteroidsDestroyed: 0,
+            badGuySpawnTime: 0,
+            supermanSpawnTime: 0,
+            badGuyLastDestroyedTime: 0,
+            consecutiveBadGuyKills: 0,
+            score: 0,
+            highScore: parseInt(localStorage.getItem('asteroidsHighScore')) || 0,
+            level: 1,
+            lives: MAX_LIVES,
+            pauseEndTime: 0,
+            explosionEndTime: 0,
+            titleLetters: [],
+            turboMode: false,
+            turboEndTime: 0
+        };
+
+        // Input state for touch
+        const touchControls = {
+            targetX: 0,
+            targetY: 0,
+            isTouchingLeft: false,    // Left half for movement
+            isTouchingRight: false,   // Right half for shooting
+            touchStartTime: 0
+        };
+
+        // Utility function
+        function distance(x1, y1, x2, y2) {
+            return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+        }
+
+        class Ship {
+            constructor() {
+                this.reset();
+            }
+            reset() {
+                this.x = canvas.width / 2;
+                this.y = canvas.height / 2;
+                this.angle = 0;
+                this.velocityX = 0;
+                this.velocityY = 0;
+                this.canShoot = true;
+                this.invincible = true;
+                this.invincibleEndTime = Date.now() + INVINCIBILITY_DURATION;
+            }
+            update() {
+                if (game.state !== 'playing') return;
+                // Angle based on touch position
+                this.angle = Math.atan2(touchControls.targetY - this.y, touchControls.targetX - this.x);
+                // Thrust if touching left side
+                if (touchControls.isTouchingLeft) {
+                    this.velocityX += Math.cos(this.angle) * SHIP_THRUST;
+                    this.velocityY += Math.sin(this.angle) * SHIP_THRUST;
+                }
+                this.velocityX *= FRICTION;
+                this.velocityY *= FRICTION;
+                this.x += this.velocityX;
+                this.y += this.velocityY;
+                this.x = (this.x + canvas.width) % canvas.width;
+                this.y = (this.y + canvas.height) % canvas.height;
+                if (this.invincible && Date.now() > this.invincibleEndTime) {
+                    this.invincible = false;
+                }
+            }
+            draw() {
+                if (game.state === 'exploding' || (game.state === 'paused' && !this.invincible)) return;
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.angle - Math.PI / 2);
+                if (isShipImageLoaded) {
+                    ctx.globalAlpha = this.invincible ? 0.5 : 1.0;
+                    ctx.drawImage(shipImage, -SHIP_SIZE / 2, -SHIP_SIZE / 2, SHIP_SIZE, SHIP_SIZE);
+                } else {
+                    ctx.beginPath();
+                    ctx.moveTo(SHIP_SIZE, 0);
+                    ctx.lineTo(-SHIP_SIZE / 2, SHIP_SIZE / 2);
+                    ctx.lineTo(-SHIP_SIZE / 2, -SHIP_SIZE / 2);
+                    ctx.closePath();
+                    ctx.fillStyle = game.turboMode ? 'cyan' : (this.invincible ? 'rgba(255, 165, 0, 0.5)' : 'orange');
+                    ctx.fill();
+                    ctx.strokeStyle = game.turboMode ? 'blue' : 'yellow';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+                ctx.restore();
+            }
+            shoot() {
+                if (game.state !== 'playing' || !this.canShoot || !touchControls.isTouchingRight) return;
+                if (game.turboMode) {
+                    game.bullets.push(new Bullet(this.x, this.y, this.angle - 0.1, false));
+                    game.bullets.push(new Bullet(this.x, this.y, this.angle + 0.1, false));
+                    this.canShoot = false;
+                    shootSound.currentTime = 0;
+                    shootSound.play();
+                    setTimeout(() => this.canShoot = true, TURBO_BULLET_COOLDOWN);
+                } else {
+                    game.bullets.push(new Bullet(this.x, this.y, this.angle));
+                    this.canShoot = false;
+                    shootSound.currentTime = 0;
+                    shootSound.play();
+                    setTimeout(() => this.canShoot = true, BULLET_COOLDOWN);
+                }
+            }
+        }
+
+        class Asteroid {
+            constructor(x, y, size = ASTEROID_MAX_SIZE) {
+                this.x = x;
+                this.y = y;
+                this.size = size;
+                const angle = Math.random() * Math.PI * 2;
+                this.velocityX = Math.cos(angle) * 2;
+                this.velocityY = Math.sin(angle) * 2;
+                this.vertices = Array(8).fill().map(() => Math.random() * 0.5 + 0.5);
+                this.color = `hsl(${Math.random() * 360}, 70%, 50%)`;
+            }
+            update() {
+                this.x += this.velocityX;
+                this.y += this.velocityY;
+                if (this.x < -this.size) this.x = canvas.width + this.size;
+                if (this.x > canvas.width + this.size) this.x = -this.size;
+                if (this.y < -this.size) this.y = canvas.height + this.size;
+                if (this.y > canvas.height + this.size) this.y = -this.size;
+            }
+            draw() {
+                ctx.beginPath();
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                for (let i = 0; i < this.vertices.length; i++) {
+                    const angle = (i / this.vertices.length) * Math.PI * 2;
+                    const r = this.size * this.vertices[i];
+                    const x = Math.cos(angle) * r;
+                    const y = Math.sin(angle) * r;
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                }
+                ctx.closePath();
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+                ctx.restore();
+            }
+            split() {
+                if (this.size > 20) {
+                    return [
+                        new Asteroid(this.x, this.y, this.size / 2),
+                        new Asteroid(this.x, this.y, this.size / 2)
+                    ];
+                }
+                return [];
+            }
+        }
+
+        class Bullet {
+            constructor(x, y, angle, isEnemy = false, isSuperman = false) {
+                this.x = x;
+                this.y = y;
+                this.velocityX = Math.cos(angle) * (isSuperman ? SUPERMAN_BULLET_SPEED : (isEnemy ? BADGUY_BULLET_SPEED : (game.turboMode ? TURBO_BULLET_SPEED : BULLET_SPEED)));
+                this.velocityY = Math.sin(angle) * (isSuperman ? SUPERMAN_BULLET_SPEED : (isEnemy ? BADGUY_BULLET_SPEED : (game.turboMode ? TURBO_BULLET_SPEED : BULLET_SPEED)));
+                this.color = isSuperman ? 'yellow' : (isEnemy ? 'purple' : `hsl(${Math.random() * 360}, 100%, 70%)`);
+                this.isEnemy = isEnemy;
+            }
+            update() {
+                if (game.state !== 'playing') return;
+                this.x += this.velocityX;
+                this.y += this.velocityY;
+            }
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 3, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+            }
+            isOffScreen() {
+                return this.x < 0 || this.x > canvas.width || this.y < 0 || this.y > canvas.height;
+            }
+        }
+
+        class BadGuy {
+            constructor() {
+                this.x = Math.random() * canvas.width;
+                this.y = Math.random() * canvas.height;
+                this.velocityX = (Math.random() - 0.5) * 4;
+                this.velocityY = (Math.random() - 0.5) * 4;
+                this.lastDirectionChange = Date.now();
+                this.lastShotTime = Date.now();
+            }
+            update() {
+                if (game.state !== 'playing') return;
+                this.x += this.velocityX;
+                this.y += this.velocityY;
+                this.x = (this.x + canvas.width) % canvas.width;
+                this.y = (this.y + canvas.height) % canvas.height;
+
+                if (Date.now() - this.lastDirectionChange > Math.random() * 500 + 500) {
+                    this.velocityX = (Math.random() - 0.5) * 4;
+                    this.velocityY = (Math.random() - 0.5) * 4;
+                    this.lastDirectionChange = Date.now();
+                }
+
+                if (Date.now() - this.lastShotTime >= BADGUY_SHOOT_INTERVAL) {
+                    const angle = Math.atan2(game.ship.y - this.y, game.ship.x - this.x);
+                    game.enemyBullets.push(new Bullet(this.x, this.y, angle, true));
+                    this.lastShotTime = Date.now();
+                }
+            }
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                if (isBadGuyImageLoaded) {
+                    ctx.drawImage(badGuyImage, -BADGUY_SIZE / 2, -BADGUY_SIZE / 2, BADGUY_SIZE, BADGUY_SIZE);
+                } else {
+                    ctx.beginPath();
+                    ctx.arc(0, 0, BADGUY_SIZE / 2, 0, Math.PI * 2);
+                    ctx.fillStyle = 'red';
+                    ctx.fill();
+                }
+                ctx.restore();
+            }
+        }
+
+        class Superman {
+            constructor() {
+                this.x = Math.random() * canvas.width;
+                this.y = Math.random() * canvas.height;
+                this.velocityX = (Math.random() - 0.5) * 4;
+                this.velocityY = (Math.random() - 0.5) * 4;
+                this.lastDirectionChange = Date.now();
+                this.lastShotTime = Date.now();
+            }
+            update() {
+                if (game.state !== 'playing') return;
+                this.x += this.velocityX;
+                this.y += this.velocityY;
+                this.x = (this.x + canvas.width) % canvas.width;
+                this.y = (this.y + canvas.height) % canvas.height;
+
+                if (Date.now() - this.lastDirectionChange > Math.random() * 500 + 500) {
+                    this.velocityX = (Math.random() - 0.5) * 4;
+                    this.velocityY = (Math.random() - 0.5) * 4;
+                    this.lastDirectionChange = Date.now();
+                }
+
+                if (Date.now() - this.lastShotTime >= SUPERMAN_SHOOT_INTERVAL) {
+                    this.shoot();
+                    this.lastShotTime = Date.now();
+                }
+            }
+            shoot() {
+                const angleStep = (2 * Math.PI) / SUPERMAN_BULLET_COUNT;
+                for (let i = 0; i < SUPERMAN_BULLET_COUNT; i++) {
+                    const angle = i * angleStep;
+                    game.enemyBullets.push(new Bullet(this.x, this.y, angle, true, true));
+                }
+                supermanShootSound.currentTime = 0;
+                supermanShootSound.play();
+            }
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                if (isSupermanImageLoaded) {
+                    ctx.drawImage(supermanImage, -SUPERMAN_SIZE / 2, -SUPERMAN_SIZE / 2, SUPERMAN_SIZE, SUPERMAN_SIZE);
+                } else {
+                    ctx.beginPath();
+                    ctx.arc(0, 0, SUPERMAN_SIZE / 2, 0, Math.PI * 2);
+                    ctx.fillStyle = 'blue';
+                    ctx.fill();
+                    ctx.strokeStyle = 'red';
+                    ctx.stroke();
+                }
+                ctx.restore();
+            }
+        }
+
+        class PowerUp {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.baseSize = POWERUP_BASE_SIZE;
+                this.size = this.baseSize;
+                this.hue = 0;
+                this.lastColorChange = Date.now();
+            }
+            update() {
+                this.size = this.baseSize + Math.sin(Date.now() * 0.005) * 5;
+                if (Date.now() - this.lastColorChange >= 1000) {
+                    this.hue = (this.hue + 60) % 360;
+                    this.lastColorChange = Date.now();
+                }
+            }
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size / 2, 0, Math.PI * 2);
+                ctx.fillStyle = `hsl(${this.hue}, 100%, 50%)`;
+                ctx.fill();
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+        }
+
+        class Particle {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.velocityX = (Math.random() - 0.5) * 3;
+                this.velocityY = (Math.random() - 0.5) * 3;
+                this.size = Math.random() * 3 + 1;
+                this.lifetime = PARTICLE_LIFETIME;
+                this.color = `hsl(${Math.random() * 360}, 80%, 60%)`;
+            }
+            update() {
+                this.x += this.velocityX;
+                this.y += this.velocityY;
+                this.lifetime -= 16;
+            }
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(${parseInt(this.color.slice(4, 7))}, ${parseInt(this.color.slice(9, 12))}, ${parseInt(this.color.slice(14, 17))}, ${this.lifetime / PARTICLE_LIFETIME})`;
+                ctx.fill();
+            }
+        }
+
+        // Touch event listeners
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            const touches = e.changedTouches;
+            for (let i = 0; i < touches.length; i++) {
+                const touchX = touches[i].clientX - canvas.getBoundingClientRect().left;
+                if (game.state === 'start') {
+                    game.state = 'playing';
+                    game.ship = new Ship();
+                    spawnAsteroids();
+                    // Unlock audio context for iOS
+                    shootSound.play().catch(() => {});
+                    explodeSound.play().catch(() => {});
+                    crashSound.play().catch(() => {});
+                    supermanShootSound.play().catch(() => {});
+                    shootSound.pause();
+                    explodeSound.pause();
+                    crashSound.pause();
+                    supermanShootSound.pause();
+                } else if (game.state === 'playing') {
+                    if (touchX < canvas.width / 2) {
+                        touchControls.isTouchingLeft = true;
+                    } else {
+                        touchControls.isTouchingRight = true;
+                    }
+                    touchControls.targetX = touchX;
+                    touchControls.targetY = touches[i].clientY - canvas.getBoundingClientRect().top;
+                }
+            }
+        });
+
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            const touches = e.touches;
+            for (let i = 0; i < touches.length; i++) {
+                const touchX = touches[i].clientX - canvas.getBoundingClientRect().left;
+                touchControls.targetX = touchX;
+                touchControls.targetY = touches[i].clientY - canvas.getBoundingClientRect().top;
+            }
+        });
+
+        canvas.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            const touches = e.changedTouches;
+            for (let i = 0; i < touches.length; i++) {
+                const touchX = touches[i].clientX - canvas.getBoundingClientRect().left;
+                if (touchX < canvas.width / 2) {
+                    touchControls.isTouchingLeft = false;
+                } else {
+                    touchControls.isTouchingRight = false;
+                }
+            }
+        });
+
+        // Initialize title screen
+        function initializeTitleAsteroids() {
+            game.asteroids = [];
+            for (let i = 0; i < 5; i++) {
+                const x = Math.random() * canvas.width;
+                const y = Math.random() * canvas.height;
+                game.asteroids.push(new Asteroid(x, y, ASTEROID_MAX_SIZE * (Math.random() * 0.5 + 0.5)));
+            }
+        }
+        initializeTitleAsteroids();
+        const titleText = "STRUELOIDS";
+        game.titleLetters = titleText.split('').map((char, index) => ({
+            char: char,
+            x: canvas.width / 2 - (titleText.length * 30) / 2 + index * 30,
+            y: canvas.height / 2,
+            offset: Math.random() * Math.PI * 2,
+            hue: Math.random() * 360
+        }));
+
+        function spawnAsteroids() {
+            game.asteroids = [];
+            game.asteroidsDestroyed = 0;
+            game.badGuy = null;
+            game.superman = null;
+            game.badGuySpawnTime = 0;
+            game.supermanSpawnTime = 0;
+            game.consecutiveBadGuyKills = 0;
+            game.powerUp = null;
+            const asteroidCount = BASE_ASTEROIDS + (game.level - 1);
+            for (let i = 0; i < asteroidCount; i++) {
+                const x = Math.random() > 0.5 ? -ASTEROID_MAX_SIZE : canvas.width + ASTEROID_MAX_SIZE;
+                const y = Math.random() * canvas.height;
+                game.asteroids.push(new Asteroid(x, y));
+            }
+        }
+
+        // Game loop
+        function gameLoop() {
+            const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+            gradient.addColorStop(0, '#1a0033');
+            gradient.addColorStop(1, '#000066');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            if (game.state === 'start') {
+                game.asteroids.forEach(asteroid => {
+                    asteroid.update();
+                    asteroid.draw();
+                });
+                game.titleLetters.forEach(letter => {
+                    letter.y = canvas.height / 2 + Math.sin(Date.now() * 0.002 + letter.offset) * 10;
+                    letter.hue = (letter.hue + 1) % 360;
+                    ctx.fillStyle = `hsl(${letter.hue}, 100%, 50%)`;
+                    ctx.font = `${Math.min(canvas.width, canvas.height) / 10}px Arial`;
+                    ctx.textAlign = 'left';
+                    ctx.fillText(letter.char, letter.x, letter.y);
+                });
+                ctx.fillStyle = 'white';
+                ctx.font = `${Math.min(canvas.width, canvas.height) / 20}px Arial`;
+                ctx.textAlign = 'center';
+                ctx.fillText('Tap to start', canvas.width / 2, canvas.height - 50);
+            } else if (game.state === 'exploding') {
+                game.asteroids.forEach(asteroid => asteroid.draw());
+                if (game.badGuy) game.badGuy.draw();
+                if (game.superman) game.superman.draw();
+                if (game.powerUp) game.powerUp.draw();
+                game.bullets.forEach(bullet => bullet.draw());
+                game.enemyBullets.forEach(bullet => bullet.draw());
+                game.particles.forEach(particle => {
+                    particle.update();
+                    particle.draw();
+                });
+                if (Date.now() > game.explosionEndTime) {
+                    game.state = 'playing';
+                    spawnAsteroids();
+                    game.ship.reset();
+                    game.bullets = [];
+                    game.enemyBullets = [];
+                    game.particles = [];
+                }
+            } else if (game.state === 'paused') {
+                game.ship.draw();
+                game.asteroids.forEach(asteroid => asteroid.draw());
+                if (game.badGuy) game.badGuy.draw();
+                if (game.superman) game.superman.draw();
+                if (game.powerUp) game.powerUp.draw();
+                game.bullets.forEach(bullet => bullet.draw());
+                game.enemyBullets.forEach(bullet => bullet.draw());
+                game.particles.forEach(particle => {
+                    particle.update();
+                    particle.draw();
+                });
+                ctx.fillStyle = 'yellow';
+                ctx.font = `${Math.min(canvas.width, canvas.height) / 10}px Arial`;
+                ctx.textAlign = 'center';
+                ctx.fillText('Next Level!', canvas.width / 2, canvas.height / 2);
+                if (Date.now() > game.pauseEndTime) {
+                    game.state = 'playing';
+                    game.level++;
+                    spawnAsteroids();
+                }
+            } else if (game.state === 'playing') {
+                game.ship.update();
+                game.ship.shoot();
+                game.ship.draw();
+
+                if (game.turboMode && Date.now() > game.turboEndTime) {
+                    game.turboMode = false;
+                }
+
+                game.bullets = game.bullets.filter(bullet => {
+                    bullet.update();
+                    if (bullet.isOffScreen()) return false;
+                    bullet.draw();
+                    return true;
+                });
+
+                game.enemyBullets = game.enemyBullets.filter(bullet => {
+                    bullet.update();
+                    if (bullet.isOffScreen()) return false;
+                    bullet.draw();
+                    return true;
+                });
+
+                game.particles = game.particles.filter(particle => {
+                    particle.update();
+                    if (particle.lifetime <= 0) return false;
+                    particle.draw();
+                    return true;
+                });
+
+                const timeSinceLastDestroyed = Date.now() - game.badGuyLastDestroyedTime;
+                if (game.asteroidsDestroyed >= 2 && 
+                    !game.badGuy && 
+                    timeSinceLastDestroyed >= BADGUY_RESPAWN_DELAY && 
+                    (!game.badGuySpawnTime || Date.now() > game.badGuySpawnTime)) {
+                    game.badGuy = new BadGuy();
+                    game.asteroidsDestroyed = 0;
+                    game.badGuySpawnTime = 0;
+                } else if (game.asteroidsDestroyed >= 2 && 
+                           !game.badGuy && 
+                           !game.badGuySpawnTime && 
+                           timeSinceLastDestroyed >= BADGUY_RESPAWN_DELAY) {
+                    game.badGuySpawnTime = Date.now() + (Math.random() * 18000 + 2000);
+                }
+
+                if (!game.superman && game.consecutiveBadGuyKills >= 2 && 
+                    game.supermanSpawnTime && Date.now() > game.supermanSpawnTime) {
+                    game.superman = new Superman();
+                    game.consecutiveBadGuyKills = 0;
+                    game.supermanSpawnTime = 0;
+                }
+
+                const bulletsToRemove = new Set();
+                const asteroidsToRemove = new Set();
+                const newAsteroids = [];
+
+                if (game.badGuy) {
+                    game.badGuy.update();
+                    game.badGuy.draw();
+
+                    game.enemyBullets.forEach((bullet, bulletIdx) => {
+                        if (!game.ship.invincible && distance(bullet.x, bullet.y, game.ship.x, game.ship.y) < SHIP_SIZE / 2) {
+                            game.enemyBullets.splice(bulletIdx, 1);
+                            crashSound.currentTime = 0;
+                            crashSound.play();
+                            for (let j = 0; j < PARTICLE_COUNT * 2; j++) {
+                                game.particles.push(new Particle(game.ship.x, game.ship.y));
+                            }
+                            game.lives--;
+                            if (game.lives <= 0) {
+                                if (game.score > game.highScore) {
+                                    game.highScore = game.score;
+                                    localStorage.setItem('asteroidsHighScore', game.highScore);
+                                }
+                                alert(`Game Over! Score: ${game.score} | High Score: ${game.highScore}`);
+                                game.state = 'start';
+                                game.score = 0;
+                                game.level = 1;
+                                game.lives = MAX_LIVES;
+                                game.bullets = [];
+                                game.enemyBullets = [];
+                                game.particles = [];
+                                game.badGuy = null;
+                                game.superman = null;
+                                game.powerUp = null;
+                                game.consecutiveBadGuyKills = 0;
+                                game.turboMode = false;
+                                initializeTitleAsteroids();
+                                return;
+                            }
+                            game.state = 'exploding';
+                            game.explosionEndTime = Date.now() + EXPLOSION_DELAY;
+                            return;
+                        }
+                    });
+
+                    game.bullets.forEach((bullet, bulletIdx) => {
+                        if (distance(bullet.x, bullet.y, game.badGuy.x, game.badGuy.y) < BADGUY_SIZE / 2) {
+                            bulletsToRemove.add(bulletIdx);
+                        }
+                    });
+                    if (bulletsToRemove.size > 0) {
+                        explodeSound.currentTime = 0;
+                        explodeSound.play();
+                        for (let j = 0; j < PARTICLE_COUNT * 2; j++) {
+                            game.particles.push(new Particle(game.badGuy.x, game.badGuy.y));
+                        }
+                        game.powerUp = new PowerUp(game.badGuy.x, game.badGuy.y);
+                        game.badGuy = null;
+                        game.badGuyLastDestroyedTime = Date.now();
+                        game.score += 50;
+                        game.badGuySpawnTime = 0;
+                        game.consecutiveBadGuyKills++;
+                        if (game.consecutiveBadGuyKills === 2) {
+                            game.supermanSpawnTime = Date.now() + (Math.random() * 8000 + 2000);
+                        }
+                    }
+                }
+
+                if (game.superman) {
+                    game.superman.update();
+                    game.superman.draw();
+
+                    game.enemyBullets.forEach((bullet, bulletIdx) => {
+                        if (!game.ship.invincible && distance(bullet.x, bullet.y, game.ship.x, game.ship.y) < SHIP_SIZE / 2) {
+                            game.enemyBullets.splice(bulletIdx, 1);
+                            crashSound.currentTime = 0;
+                            crashSound.play();
+                            for (let j = 0; j < PARTICLE_COUNT * 2; j++) {
+                                game.particles.push(new Particle(game.ship.x, game.ship.y));
+                            }
+                            game.lives--;
+                            if (game.lives <= 0) {
+                                if (game.score > game.highScore) {
+                                    game.highScore = game.score;
+                                    localStorage.setItem('asteroidsHighScore', game.highScore);
+                                }
+                                alert(`Game Over! Score: ${game.score} | High Score: ${game.highScore}`);
+                                game.state = 'start';
+                                game.score = 0;
+                                game.level = 1;
+                                game.lives = MAX_LIVES;
+                                game.bullets = [];
+                                game.enemyBullets = [];
+                                game.particles = [];
+                                game.badGuy = null;
+                                game.superman = null;
+                                game.powerUp = null;
+                                game.consecutiveBadGuyKills = 0;
+                                game.turboMode = false;
+                                initializeTitleAsteroids();
+                                return;
+                            }
+                            game.state = 'exploding';
+                            game.explosionEndTime = Date.now() + EXPLOSION_DELAY;
+                            return;
+                        }
+                    });
+
+                    game.bullets.forEach((bullet, bulletIdx) => {
+                        if (distance(bullet.x, bullet.y, game.superman.x, game.superman.y) < SUPERMAN_SIZE / 2) {
+                            bulletsToRemove.add(bulletIdx);
+                        }
+                    });
+                    if (bulletsToRemove.size > 0) {
+                        explodeSound.currentTime = 0;
+                        explodeSound.play();
+                        for (let j = 0; j < PARTICLE_COUNT * 2; j++) {
+                            game.particles.push(new Particle(game.superman.x, game.superman.y));
+                        }
+                        game.powerUp = new PowerUp(game.superman.x, game.superman.y);
+                        game.superman = null;
+                        game.supermanSpawnTime = 0;
+                        game.score += 100;
+                    }
+                }
+
+                if (game.powerUp) {
+                    game.powerUp.update();
+                    game.powerUp.draw();
+                    if (distance(game.ship.x, game.ship.y, game.powerUp.x, game.powerUp.y) < (SHIP_SIZE + game.powerUp.size) / 2) {
+                        game.turboMode = true;
+                        game.turboEndTime = Date.now() + TURBO_DURATION;
+                        game.powerUp = null;
+                    }
+                }
+
+                game.asteroids.forEach((asteroid, asteroidIdx) => {
+                    asteroid.update();
+                    asteroid.draw();
+
+                    if (!game.ship.invincible && distance(asteroid.x, asteroid.y, game.ship.x, game.ship.y) < asteroid.size + SHIP_SIZE / 2) {
+                        crashSound.currentTime = 0;
+                        crashSound.play();
+                        for (let j = 0; j < PARTICLE_COUNT * 2; j++) {
+                            game.particles.push(new Particle(game.ship.x, game.ship.y));
+                        }
+                        game.lives--;
+                        if (game.lives <= 0) {
+                            if (game.score > game.highScore) {
+                                game.highScore = game.score;
+                                localStorage.setItem('asteroidsHighScore', game.highScore);
+                            }
+                            alert(`Game Over! Score: ${game.score} | High Score: ${game.highScore}`);
+                            game.state = 'start';
+                            game.score = 0;
+                            game.level = 1;
+                            game.lives = MAX_LIVES;
+                            game.bullets = [];
+                            game.enemyBullets = [];
+                            game.particles = [];
+                            game.badGuy = null;
+                            game.superman = null;
+                            game.powerUp = null;
+                            game.consecutiveBadGuyKills = 0;
+                            game.turboMode = false;
+                            initializeTitleAsteroids();
+                            return;
+                        }
+                        game.state = 'exploding';
+                        game.explosionEndTime = Date.now() + EXPLOSION_DELAY;
+                        return;
+                    }
+
+                    game.bullets.forEach((bullet, bulletIdx) => {
+                        if (distance(asteroid.x, asteroid.y, bullet.x, bullet.y) < asteroid.size) {
+                            bulletsToRemove.add(bulletIdx);
+                            asteroidsToRemove.add(asteroidIdx);
+                            game.score += 10;
+                            game.asteroidsDestroyed++;
+                            explodeSound.currentTime = 0;
+                            explodeSound.play();
+                            for (let j = 0; j < PARTICLE_COUNT; j++) {
+                                game.particles.push(new Particle(asteroid.x, asteroid.y));
+                            }
+                            newAsteroids.push(...asteroid.split());
+                        }
+                    });
+                });
+
+                game.bullets = game.bullets.filter((_, idx) => !bulletsToRemove.has(idx));
+                game.asteroids = game.asteroids.filter((_, idx) => !asteroidsToRemove.has(idx));
+                game.asteroids.push(...newAsteroids);
+
+                if (game.asteroids.length === 0) {
+                    game.state = 'paused';
+                    game.pauseEndTime = Date.now() + LEVEL_PAUSE_DURATION;
+                }
+
+                if (game.turboMode) {
+                    ctx.fillStyle = 'cyan';
+                    ctx.font = `${Math.min(canvas.width, canvas.height) / 20}px Arial`;
+                    ctx.textAlign = 'right';
+                    const timeLeft = Math.ceil((game.turboEndTime - Date.now()) / 1000);
+                    ctx.fillText(`Turbo Mode: ${timeLeft}s`, canvas.width - 10, 30);
+                }
+            }
+
+            if (game.state === 'playing' || game.state === 'paused' || game.state === 'exploding') {
+                ctx.fillStyle = '#00ffff';
+                ctx.font = `${Math.min(canvas.width, canvas.height) / 20}px Arial`;
+                ctx.textAlign = 'left';
+                ctx.fillText(`Score: ${game.score}`, 10, 30);
+                ctx.fillText(`High Score: ${game.highScore}`, 10, 60);
+                ctx.fillText(`Level: ${game.level}`, 10, 90);
+                ctx.fillText(`Lives: ${game.lives}`, 10, 120);
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Start game loop
+        gameLoop();
+    </script>
+</body>
+</html>
